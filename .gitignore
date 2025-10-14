@@ -18,7 +18,10 @@ lib/
 lib64/
 parts/
 sdist/
+venv/
+misc/
 var/
+.venv-linux/
 wheels/
 share/python-wheels/
 *.egg-info/
@@ -31,6 +34,9 @@ MANIFEST
 #  before PyInstaller builds the exe, so as to inject date/other infos into it.
 *.manifest
 *.spec
+
+*.pkl
+*.index
 
 # Installer logs
 pip-log.txt
