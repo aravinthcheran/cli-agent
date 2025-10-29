@@ -6,8 +6,8 @@ import faiss
 import os
 
 DATA_FILE = "NL2SH-ALFA_train_simple.json"
-INDEX_FILE = "bash_commands_l2.bin"
-META_FILE = "metadata_l2.npz"
+INDEX_FILE = "bash_commands_cosine.bin"
+META_FILE = "metadata_cosine.npz"
 
 # Load dataset
 with open(DATA_FILE, "r", encoding="utf-8") as f:
@@ -23,7 +23,7 @@ if os.path.exists(INDEX_FILE) and os.path.exists(META_FILE):
     load_time = time.time() - load_start
     print(f"✓ Loaded in {load_time:.4f} seconds")
 else:
-    print("Building FAISS index with L2 distance from scratch...")
+    print("Building FAISS index with cosine similarity from scratch...")
     texts = [item["nl"] for item in data]
 
     # Embeddings
@@ -31,11 +31,15 @@ else:
     print(f"Encoding {len(texts)} texts...")
     embeddings = embedder.encode(texts, convert_to_numpy=True)
 
+    # Normalize embeddings for cosine similarity
+    print("Normalizing embeddings...")
+    faiss.normalize_L2(embeddings)
+
     # Build FAISS index
     print("Building and indexing...")
     build_start = time.time()
     d = embeddings.shape[1]
-    index = faiss.IndexFlatL2(d)
+    index = faiss.IndexFlatIP(d)  # Inner Product for cosine similarity
     index.add(embeddings)
     build_time = time.time() - build_start
 
@@ -44,13 +48,14 @@ else:
     faiss.write_index(index, INDEX_FILE)
     np.savez_compressed(META_FILE, data=np.array(data, dtype=object))
 
-    print(f"✓ Indexed {len(texts)} commands into FAISS (L2 Distance)")
+    print(f"✓ Indexed {len(texts)} commands into FAISS (Cosine Similarity)")
     print(f"✓ Index building time: {build_time:.4f} seconds")
     print(f"✓ Files saved: {INDEX_FILE}, {META_FILE}")
 
 # Example retrieval function
 def retrieve(query, k=5):
     query_vec = embedder.encode([query], convert_to_numpy=True)
+    faiss.normalize_L2(query_vec)  # Normalize query vector
     D, I = index.search(query_vec, k)
     results = [data[idx] for idx in I[0]]
     return results

@@ -21,6 +21,7 @@ sdist/
 venv/
 misc/
 var/
+myenv/
 .venv-linux/
 wheels/
 share/python-wheels/
@@ -37,6 +38,8 @@ MANIFEST
 
 *.pkl
 *.index
+*.bin
+*.npz
 
 # Installer logs
 pip-log.txt
