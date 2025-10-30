@@ -1,3 +1,4 @@
+import os
 import numpy as np
 import re
 import subprocess
@@ -16,7 +17,7 @@ console = Console()
 INDEX_FILE = "bash_commands_l2.bin"
 META_FILE = "metadata_l2.npz"
 TOP_K = 5
-OLLAMA_MODEL = "mistral:instruct"
+OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "mistral")
 OLLAMA_URL = "http://localhost:11434/api/generate"
 
 # Global debug mode flag

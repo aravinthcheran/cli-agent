@@ -150,27 +150,34 @@ Output ONLY the JSON, nothing else."""
     
     # Parse JSON response
     try:
-        # Extract JSON from response
-        json_start = response.find('{')
-        json_end = response.rfind('}') + 1
+        # Remove markdown code blocks if present
+        cleaned_response = response
+        if "```json" in response:
+            # Extract content between ```json and ```
+            start_marker = "```json"
+            end_marker = "```"
+            start_idx = response.find(start_marker)
+            if start_idx >= 0:
+                start_idx += len(start_marker)
+                end_idx = response.find(end_marker, start_idx)
+                if end_idx >= 0:
+                    cleaned_response = response[start_idx:end_idx].strip()
+        elif "```" in response:
+            # Extract content between ``` and ```
+            parts = response.split("```")
+            if len(parts) >= 3:
+                cleaned_response = parts[1].strip()
+        
+        # Extract JSON from cleaned response
+        json_start = cleaned_response.find('{')
+        json_end = cleaned_response.rfind('}') + 1
         if json_start >= 0 and json_end > json_start:
-            json_str = response[json_start:json_end]
+            json_str = cleaned_response[json_start:json_end]
             result = json.loads(json_str)
             
             # Validate required fields
             if "overall_accuracy" in result and "correct_count" in result:
-                # Debug: Verify consistency
-                actual_correct = sum(1 for test in result.get('per_test_results', []) if test.get('is_correct', False))
-                reported_correct = result.get('correct_count', 0)
-                
-                if actual_correct != reported_correct:
-                    console.print(f"[yellow]⚠️ Warning: Gemini evaluation inconsistency![/yellow]")
-                    console.print(f"[dim]Reported correct_count: {reported_correct}, Actual correct from per_test: {actual_correct}[/dim]")
-                    console.print(f"[dim]Using actual count from per_test_results...[/dim]")
-                    # Fix the inconsistency by using actual count
-                    result['correct_count'] = actual_correct
-                    result['overall_accuracy'] = f"{actual_correct}/{result['total_count']}"
-                
+                console.print(f"[green]✓ Successfully parsed Gemini evaluation[/green]")
                 return result
     except (json.JSONDecodeError, ValueError) as e:
         console.print(f"[yellow]⚠️ Failed to parse Gemini response as JSON: {e}[/yellow]")
