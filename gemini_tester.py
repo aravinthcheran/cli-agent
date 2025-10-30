@@ -61,7 +61,7 @@ def call_gemini_api(prompt: str, temperature: float = 0.3, max_tokens: int = 500
             f"{GEMINI_API_URL}?key={GEMINI_API_KEY}",
             headers=headers,
             json=payload,
-            timeout=30
+            timeout=120  # Increased to 120 seconds for large batches
         )
         response.raise_for_status()
         
@@ -85,22 +85,95 @@ def call_gemini_api(prompt: str, temperature: float = 0.3, max_tokens: int = 500
         console.print(f"[bold red]Unexpected error: {e}[/bold red]")
         return ""
 
-def evaluate_batch_accuracy(test_results: List[Dict]) -> Dict:
+def evaluate_batch_accuracy(test_results: List[Dict], batch_size: int = 50) -> Dict:
     """
-    Use Gemini to evaluate all test results in a single batch.
-    Provides overall accuracy assessment instead of individual scores.
+    Use Gemini to evaluate test results in batches to avoid timeouts.
+    Processes tests in chunks and combines results.
+    
+    Args:
+        test_results: List of test result dictionaries
+        batch_size: Number of tests to evaluate per API call (default: 50)
     
     Returns a dict with:
     - overall_accuracy: str (percentage or description)
     - analysis: str (detailed analysis)
     - correct_count: int
     - total_count: int
+    - per_test_results: list of per-test evaluations
+    """
+    total_tests = len(test_results)
+    
+    # If tests fit in one batch, process normally
+    if total_tests <= batch_size:
+        return _evaluate_single_batch(test_results, start_index=0)
+    
+    # Process in batches
+    console.print(f"[yellow]Processing {total_tests} tests in batches of {batch_size}...[/yellow]")
+    
+    all_per_test_results = []
+    total_correct = 0
+    batch_analyses = []
+    
+    num_batches = (total_tests + batch_size - 1) // batch_size  # Ceiling division
+    
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        console=console
+    ) as progress:
+        task = progress.add_task("[cyan]Evaluating batches...", total=num_batches)
+        
+        for batch_num in range(num_batches):
+            start_idx = batch_num * batch_size
+            end_idx = min(start_idx + batch_size, total_tests)
+            batch = test_results[start_idx:end_idx]
+            
+            progress.update(task, description=f"[cyan]Evaluating batch {batch_num + 1}/{num_batches} (tests {start_idx + 1}-{end_idx})...")
+            
+            # Evaluate this batch
+            batch_result = _evaluate_single_batch(batch, start_index=start_idx)
+            
+            # Accumulate results
+            total_correct += batch_result.get('correct_count', 0)
+            all_per_test_results.extend(batch_result.get('per_test_results', []))
+            
+            if batch_result.get('analysis'):
+                batch_analyses.append(f"Batch {batch_num + 1}: {batch_result['analysis']}")
+            
+            progress.advance(task)
+            
+            # Small delay between batches to avoid rate limiting
+            if batch_num < num_batches - 1:
+                time.sleep(1)
+    
+    # Combine all results
+    overall_accuracy = f"{total_correct}/{total_tests} ({(total_correct/total_tests)*100:.1f}%)"
+    combined_analysis = "\n\n".join(batch_analyses) if batch_analyses else "Batch evaluation completed"
+    
+    return {
+        "overall_accuracy": overall_accuracy,
+        "correct_count": total_correct,
+        "total_count": total_tests,
+        "analysis": combined_analysis,
+        "per_test_results": all_per_test_results
+    }
+
+def _evaluate_single_batch(test_results: List[Dict], start_index: int = 0) -> Dict:
+    """
+    Evaluate a single batch of test results with Gemini.
+    
+    Args:
+        test_results: List of test result dictionaries for this batch
+        start_index: Starting test number for proper numbering
+    
+    Returns evaluation dict for this batch
     """
     # Build comprehensive prompt with all test cases
     test_summary = []
     for i, result in enumerate(test_results, 1):
+        actual_test_num = start_index + i
         test_summary.append(f"""
-Test Case #{i}:
+Test Case #{actual_test_num}:
 Natural Language Query: {result['nl_query']}
 Expected Command: {result['expected']}
 {f"Alternative Expected: {result['expected_alt']}" if result.get('expected_alt') else ""}
@@ -111,7 +184,7 @@ Generated Command: {result['generated']}
     
     prompt = f"""You are an expert Linux/Bash command evaluator. Analyze these test results from a CLI agent that generates bash commands from natural language.
 
-Below are {len(test_results)} test cases showing:
+Below are {len(test_results)} test cases (starting from test #{start_index + 1}) showing:
 1. What the user asked for (Natural Language Query)
 2. What command was expected (Expected Command)
 3. What the CLI agent generated (Generated Command)
@@ -148,12 +221,12 @@ Evaluation Guidelines:
 Provide your analysis in this EXACT JSON format:
 {{
   "overall_accuracy": "<percentage like '85%' or '17/20'>",
-  "correct_count": <number of correct commands>,
+  "correct_count": <number of correct commands in THIS batch>,
   "total_count": {len(test_results)},
-  "analysis": "<detailed analysis of patterns, strengths, weaknesses>",
+  "analysis": "<detailed analysis of patterns, strengths, weaknesses for THIS batch>",
   "per_test_results": [
     {{
-      "test_num": 1,
+      "test_num": <actual test number from the test case header>,
       "is_correct": true/false,
       "brief_note": "<one line explanation>"
     }},
@@ -326,10 +399,15 @@ def generate_command_from_nl(nl_query: str) -> Tuple[str, bool]:
         console.print(f"[red]Error generating command: {e}[/red]")
         return "", False
 
-def run_test_suite(test_cases: List[Dict], detailed: bool = False) -> Dict:
+def run_test_suite(test_cases: List[Dict], detailed: bool = False, batch_size: int = 50) -> Dict:
     """
     Run the complete test suite and return results.
-    First generates all commands, then evaluates in batch with Gemini.
+    First generates all commands, then evaluates in batches with Gemini.
+    
+    Args:
+        test_cases: List of test case dictionaries
+        detailed: Whether to show detailed output (legacy param)
+        batch_size: Number of tests to evaluate per Gemini API call
     
     Returns dict with:
     - total: int
@@ -372,9 +450,9 @@ def run_test_suite(test_cases: List[Dict], detailed: bool = False) -> Dict:
     
     # Step 2: Batch evaluate with Gemini
     console.print("\n[bold cyan]Step 2: Evaluating with Gemini AI...[/bold cyan]")
-    console.print("[dim]Sending all test results to Gemini for accuracy analysis...[/dim]\n")
+    console.print(f"[dim]Evaluating {len(test_results)} test results (batch size: {batch_size})...[/dim]\n")
     
-    gemini_evaluation = evaluate_batch_accuracy(test_results)
+    gemini_evaluation = evaluate_batch_accuracy(test_results, batch_size=batch_size)
     
     # Step 3: Combine results
     results = {
@@ -552,7 +630,19 @@ def main():
     
     # Run tests
     console.print("\n[bold cyan]Starting test suite...[/bold cyan]\n")
-    results = run_test_suite(test_cases, detailed=False)
+    
+    # Determine batch size based on number of tests
+    # For large test sets, use smaller batches to avoid timeouts
+    if len(test_cases) > 200:
+        batch_size = 30
+    elif len(test_cases) > 100:
+        batch_size = 40
+    else:
+        batch_size = 50
+    
+    console.print(f"[dim]Using batch size: {batch_size} tests per API call[/dim]\n")
+    
+    results = run_test_suite(test_cases, detailed=False, batch_size=batch_size)
     
     # Display summary
     display_summary(results)
