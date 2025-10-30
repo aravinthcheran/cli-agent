@@ -5,7 +5,7 @@ from sentence_transformers import SentenceTransformer
 import faiss
 import os
 
-DATA_FILE = "NL2SH-ALFA_train_simple.json"
+DATA_FILE = "train.jsonl"
 INDEX_FILE = "bash_commands_cosine.bin"
 META_FILE = "metadata_cosine.npz"
 

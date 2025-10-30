@@ -5,13 +5,13 @@ from sentence_transformers import SentenceTransformer
 import faiss
 import os
 
-DATA_FILE = "NL2SH-ALFA_train_simple.json"
+DATA_FILE = "train.jsonl"
 INDEX_FILE = "bash_commands_l2.bin"
 META_FILE = "metadata_l2.npz"
 
-# Load dataset
+# Load dataset (JSONL format - one JSON object per line)
 with open(DATA_FILE, "r", encoding="utf-8") as f:
-    data = json.load(f)
+    data = [json.loads(line) for line in f]
 
 # Check if index already exists
 if os.path.exists(INDEX_FILE) and os.path.exists(META_FILE):
@@ -24,7 +24,7 @@ if os.path.exists(INDEX_FILE) and os.path.exists(META_FILE):
     print(f"✓ Loaded in {load_time:.4f} seconds")
 else:
     print("Building FAISS index with L2 distance from scratch...")
-    texts = [item["nl"] for item in data]
+    texts = [item["instruction"] for item in data]
 
     # Embeddings
     embedder = SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2")

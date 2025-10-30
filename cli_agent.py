@@ -16,7 +16,7 @@ console = Console()
 INDEX_FILE = "bash_commands_l2.bin"
 META_FILE = "metadata_l2.npz"
 TOP_K = 5
-OLLAMA_MODEL = "mistral"
+OLLAMA_MODEL = "mistral:instruct"
 OLLAMA_URL = "http://localhost:11434/api/generate"
 
 # Global debug mode flag
@@ -612,8 +612,8 @@ def generate_bash(query, error_context=None, show_rag_debug=False):
         console.print(f"[cyan]Number of examples retrieved:[/cyan] {len(examples)}")
         for i, item in enumerate(examples[:3], 1):
             console.print(f"\n[yellow]Example {i}:[/yellow]")
-            console.print(f"  NL: {item['nl'][:100]}...")
-            console.print(f"  Bash: {item['bash'][:100]}...")
+            console.print(f"  NL: {item['instruction'][:100]}...")
+            console.print(f"  Bash: {item['response'][:100]}...")
         console.print()
     
     prompt = """You are a Linux Bash command expert. Generate ONLY executable Bash commands.
@@ -640,7 +640,7 @@ RULES:
 
     prompt += "EXAMPLES FROM KNOWLEDGE BASE (follow these patterns closely):\n"
     for item in examples[:3]:
-        prompt += f"Query: {item['nl']}\nCommands: {item['bash']}\n\n"
+        prompt += f"Query: {item['instruction']}\nCommands: {item['response']}\n\n"
 
     prompt += f"Current Query: {query}\n"
     prompt += "IMPORTANT: Look at the examples above - they show simple, effective bash commands.\n"
@@ -890,8 +890,8 @@ def explain_error(original_query, failed_cmd, error_msg, rag_examples):
         if rag_examples:
             for i, item in enumerate(rag_examples[:3], 1):
                 console.print(f"\n[yellow]Example {i}:[/yellow]")
-                console.print(f"  Query: {item['nl'][:80]}...")
-                console.print(f"  Command: {item['bash'][:80]}...")
+                console.print(f"  Query: {item['instruction'][:80]}...")
+                console.print(f"  Command: {item['response'][:80]}...")
         else:
             console.print("[bold red]⚠️ WARNING: No RAG examples were retrieved![/bold red]")
     
@@ -915,7 +915,7 @@ Provide a concise 2-3 sentence explanation and the corrected command.
             
             query_lower = original_query.lower()
             relevant_count = sum(1 for ex in rag_examples[:3] 
-                               if any(word in ex['nl'].lower() for word in query_lower.split()[:3]))
+                               if any(word in ex['instruction'].lower() for word in query_lower.split()[:3]))
             
             if relevant_count > 0:
                 console.print(f"✓ {relevant_count}/3 examples appear relevant to query")
@@ -1017,8 +1017,8 @@ def run_cli():
                 if rag_examples and len(rag_examples) > 0:
                     for i, item in enumerate(rag_examples[:3], 1):
                         console.print(f"\n[yellow]Example {i}:[/yellow]")
-                        console.print(f"  [dim]Query:[/dim] {item['nl'][:100]}...")
-                        console.print(f"  [dim]Command:[/dim] {item['bash'][:100]}...")
+                        console.print(f"  [dim]Query:[/dim] {item['instruction'][:100]}...")
+                        console.print(f"  [dim]Command:[/dim] {item['response'][:100]}...")
                 else:
                     console.print("[red]⚠️ No RAG examples retrieved[/red]")
             
