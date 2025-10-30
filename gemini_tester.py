@@ -11,6 +11,7 @@ This script tests the CLI agent by:
 import os
 import csv
 import json
+import re
 import time
 import requests
 from typing import Dict, List, Tuple
@@ -117,16 +118,32 @@ Below are {len(test_results)} test cases showing:
 
 {all_tests}
 
-Please evaluate:
-1. How accurately does the CLI agent provide the required output?
-2. For each test, does the generated command achieve the same goal as expected?
-3. What is the overall accuracy percentage?
+CRITICAL EVALUATION CRITERIA:
+Your PRIMARY focus is: **Does the generated command accomplish the task described in the Natural Language Query?**
 
-IMPORTANT:
-- Different commands can be equally correct (e.g., 'ls -a' vs 'ls -la')
-- Focus on whether commands achieve the GOAL, not exact syntax matching
-- Minor flag differences are OK if result is the same
-- Consider both expected and alternative commands as correct
+Evaluation Guidelines:
+1. **Functional Equivalence is KEY**: If the generated command achieves the same END RESULT as the expected command, mark it CORRECT
+   - Example: 'uptime' and 'w' both show system load averages → BOTH CORRECT
+   - Example: 'rm -rf dir' and 'rmdir dir' both remove directories → BOTH CORRECT
+   - Example: Different flags that produce same output → CORRECT
+
+2. **Multiple Valid Approaches**: Many Linux tasks have multiple correct solutions
+   - Different tools can achieve the same goal (grep vs awk, find vs ls, etc.)
+   - More robust/forceful commands are acceptable (rm -rf vs rmdir)
+   - Different syntax that produces identical output is CORRECT
+
+3. **When to Mark INCORRECT**:
+   - Command does NOT accomplish the stated task
+   - Command operates on wrong target (e.g., $HOME instead of $PATH)
+   - Command produces fundamentally different output than requested
+   - Command would fail or error for the given task
+
+4. **Verify Your Understanding**: 
+   - Read the Natural Language Query carefully
+   - Ask: "Would this command give me what was asked for?"
+   - Don't penalize for being "different" - only penalize for being "wrong"
+
+5. Consider both expected AND alternative commands as reference points
 
 Provide your analysis in this EXACT JSON format:
 {{
@@ -144,44 +161,97 @@ Provide your analysis in this EXACT JSON format:
   ]
 }}
 
+EXAMPLE EVALUATIONS FOR REFERENCE:
+- Query: "print system load averages" | Expected: "w" | Generated: "uptime" → CORRECT (both show load averages)
+- Query: "remove directory fake_dir" | Expected: "rmdir fake_dir" | Generated: "rm -rf fake_dir" → CORRECT (both remove the directory)
+- Query: "print current user's path" | Expected: "echo $PATH" | Generated: "echo $HOME" → INCORRECT (PATH ≠ HOME)
+- Query: "show hidden files" | Expected: "ls -a" | Generated: "ls -la" → CORRECT (both show hidden files)
+
 Output ONLY the JSON, nothing else."""
 
-    response = call_gemini_api(prompt, temperature=0.2, max_tokens=2000)
+    # Calculate appropriate max_tokens based on number of tests
+    # Each test result needs roughly 50-100 tokens, plus overhead
+    estimated_tokens = len(test_results) * 100 + 1000
+    max_tokens = max(2000, min(estimated_tokens, 8000))
+    
+    response = call_gemini_api(prompt, temperature=0.2, max_tokens=max_tokens)
     
     # Parse JSON response
     try:
         # Remove markdown code blocks if present
-        cleaned_response = response
-        if "```json" in response:
+        cleaned_response = response.strip()
+        
+        # Try multiple strategies to extract JSON
+        if "```json" in cleaned_response:
             # Extract content between ```json and ```
             start_marker = "```json"
             end_marker = "```"
-            start_idx = response.find(start_marker)
+            start_idx = cleaned_response.find(start_marker)
             if start_idx >= 0:
                 start_idx += len(start_marker)
-                end_idx = response.find(end_marker, start_idx)
+                end_idx = cleaned_response.find(end_marker, start_idx)
                 if end_idx >= 0:
-                    cleaned_response = response[start_idx:end_idx].strip()
-        elif "```" in response:
+                    cleaned_response = cleaned_response[start_idx:end_idx].strip()
+                else:
+                    # No closing marker found, take everything after opening
+                    cleaned_response = cleaned_response[start_idx:].strip()
+        elif "```" in cleaned_response:
             # Extract content between ``` and ```
-            parts = response.split("```")
+            parts = cleaned_response.split("```")
             if len(parts) >= 3:
                 cleaned_response = parts[1].strip()
+                # Remove language identifier if present (e.g., "json")
+                if cleaned_response.startswith(('json', 'JSON')):
+                    cleaned_response = cleaned_response[4:].strip()
         
-        # Extract JSON from cleaned response
+        # Find JSON object boundaries
         json_start = cleaned_response.find('{')
-        json_end = cleaned_response.rfind('}') + 1
-        if json_start >= 0 and json_end > json_start:
-            json_str = cleaned_response[json_start:json_end]
+        json_end = cleaned_response.rfind('}')
+        
+        if json_start >= 0 and json_end >= 0 and json_end > json_start:
+            json_str = cleaned_response[json_start:json_end + 1]
+            
+            # Try to parse the JSON
             result = json.loads(json_str)
             
             # Validate required fields
             if "overall_accuracy" in result and "correct_count" in result:
                 console.print(f"[green]✓ Successfully parsed Gemini evaluation[/green]")
                 return result
-    except (json.JSONDecodeError, ValueError) as e:
+            else:
+                console.print(f"[yellow]⚠️ JSON missing required fields[/yellow]")
+        else:
+            console.print(f"[yellow]⚠️ Could not find valid JSON boundaries[/yellow]")
+            
+    except json.JSONDecodeError as e:
         console.print(f"[yellow]⚠️ Failed to parse Gemini response as JSON: {e}[/yellow]")
-        console.print(f"[dim]Response was: {response[:300]}...[/dim]")
+        console.print(f"[dim]Response preview: {response[:500]}...[/dim]")
+        
+        # Try to salvage partial results
+        try:
+            # Attempt to extract just the summary fields if per_test_results is broken
+            if "overall_accuracy" in response and "correct_count" in response:
+                console.print("[yellow]Attempting to extract partial results...[/yellow]")
+                # Use regex or simple parsing to extract key fields
+                import re
+                
+                # Try to find overall_accuracy
+                acc_match = re.search(r'"overall_accuracy"\s*:\s*"([^"]+)"', response)
+                count_match = re.search(r'"correct_count"\s*:\s*(\d+)', response)
+                total_match = re.search(r'"total_count"\s*:\s*(\d+)', response)
+                
+                if acc_match and count_match:
+                    return {
+                        "overall_accuracy": acc_match.group(1),
+                        "correct_count": int(count_match.group(1)),
+                        "total_count": int(total_match.group(1)) if total_match else len(test_results),
+                        "analysis": "Partial results extracted from malformed response",
+                        "per_test_results": []
+                    }
+        except Exception as extract_error:
+            console.print(f"[dim]Could not extract partial results: {extract_error}[/dim]")
+    except Exception as e:
+        console.print(f"[yellow]⚠️ Unexpected error parsing response: {e}[/yellow]")
     
     # Fallback evaluation
     return {
