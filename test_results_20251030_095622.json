@@ -1,0 +1,43 @@
+{
+  "total": 3,
+  "passed": 2,
+  "failed": 1,
+  "generation_failed": 0,
+  "overall_accuracy": "66.67%",
+  "gemini_analysis": "The agent struggles with simple commands, overcomplicating the first test case. It correctly handles the second test case, demonstrating an understanding of the `-a` flag for listing hidden files. The third test case is partially correct; it uses `lsof` but adds a grep filter that is not strictly necessary and might remove relevant information. The agent seems to sometimes overthink the problem, leading to unnecessarily complex commands.",
+  "results": [
+    {
+      "test_num": 1,
+      "nl_query": "list files in the current directory",
+      "expected": "ls",
+      "expected_alt": "ls -l",
+      "generated": "find . \\( ! -name . -prune \\)\nfind . -type f | xargs ls",
+      "generation_success": true,
+      "difficulty": 0,
+      "is_correct": false,
+      "gemini_note": "The generated command is overly complex and doesn't simply list files like `ls` or `ls -l`."
+    },
+    {
+      "test_num": 2,
+      "nl_query": "list all files in the current directory including hidden files",
+      "expected": "ls -a",
+      "expected_alt": "ls -alh",
+      "generated": "ls -a\nor\nfind . -type f -exec ls -d {} \\;",
+      "generation_success": true,
+      "difficulty": 0,
+      "is_correct": true,
+      "gemini_note": "The generated command `ls -a` correctly lists all files, including hidden ones."
+    },
+    {
+      "test_num": 3,
+      "nl_query": "list open files",
+      "expected": "lsof",
+      "expected_alt": "lsof -P -i -n",
+      "generated": "lsof | grep -vF '(COMMAND|USER)'",
+      "generation_success": true,
+      "difficulty": 0,
+      "is_correct": true,
+      "gemini_note": "The generated command uses `lsof` which is the correct base command, even though the grep filter is not ideal."
+    }
+  ]
+}

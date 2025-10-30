@@ -170,39 +170,6 @@ def retrieve(query, top_k=TOP_K):
     debug_print(f"✓ Retrieved {len(results)} examples from knowledge base", "green")
     return results
 
-def check_query_clarity(query):
-    """Check if a query is too vague or unclear and needs clarification."""
-    vague_patterns = [
-        (r'\bdelete.*file\b', ['file path/name', 'recursively delete (yes/no)', 'directory or file']),
-        (r'\bfind\b', ['search criteria (filename, extension, size, etc.)', 'where to search (current dir, home, root)', 'file type']),
-        (r'\bcopy\b|\bcp\b', ['source file/directory', 'destination path', 'recursive (yes/no)']),
-        (r'\bmove\b|\bmv\b', ['source file/directory', 'destination path']),
-        (r'\bcreate.*file\b', ['filename/path', 'file type (text, script, config)', 'initial content']),
-        (r'\blist\b|\bls\b', ['directory to list', 'show hidden files (yes/no)', 'show details (yes/no)']),
-        (r'\bsearch\b|\bgrep\b', ['search term/pattern', 'search location', 'file type/extension']),
-        (r'\bcompress\b|\btar\b|\bzip\b', ['files/directory to compress', 'output filename', 'compression type']),
-        (r'\bextract\b|\bunzip\b', ['archive file path', 'extraction destination']),
-        (r'\breplace\b|\bsed\b', ['text to find', 'text to replace with', 'file(s) to modify']),
-    ]
-    
-    query_lower = query.lower()
-    
-    for pattern, questions in vague_patterns:
-        if re.search(pattern, query_lower):
-            return True, questions
-    
-    return False, []
-
-def has_file_path(query):
-    """Check if query contains a file path or just a filename."""
-    # Check for path separators or absolute paths
-    if '/' in query or '\\' in query or query.startswith('~'):
-        return True
-    # Check for current directory references
-    if query.startswith('.') or query.startswith('..'):
-        return True
-    return False
-
 def extract_filename(query):
     """Extract filename from query if present."""
     # Look for common filename patterns
@@ -212,62 +179,97 @@ def extract_filename(query):
         return match.group(1)
     return None
 
-def ask_clarifying_questions(query, questions):
-    """Ask the user clarifying questions to refine the request."""
-    console.print("\n[bold yellow]⚠️  Your request needs more details. Let me ask some clarifying questions:[/bold yellow]\n")
+def evaluate_information_sufficiency(query_with_answers):
+    """Use the model to evaluate if provided information is sufficient for command generation."""
+    console.print("\n[dim]🤖 Evaluating if provided information is sufficient...[/dim]")
     
-    answers = {}
-    for i, question in enumerate(questions, 1):
-        answer = Prompt.ask(f"[cyan]Q{i}:[/cyan] {question}").strip()
-        answers[question] = answer
+    evaluation_prompt = f"""Analyze this user request and determine if it has SUFFICIENT information for generating a precise bash command:
+
+User Request: {query_with_answers}
+
+Respond with ONLY:
+- "SUFFICIENT" if all necessary information is provided
+- "MISSING: [list what's missing]" if information is incomplete
+
+Consider what's needed:
+- For file operations: full file path or filename + directory
+- For searches: what to search for + where to search
+- For copies/moves: source + destination paths
+- For permissions: target file + permission level
+- For compression: source files + destination filename
+
+Be strict - paths should be specific, not vague."""
     
-    # Reconstruct the query with clarifications
-    clarified_query = f"{query}\n\nDetails provided:\n"
-    for q, a in answers.items():
-        clarified_query += f"- {q}: {a}\n"
+    result = ollama_generate(evaluation_prompt, max_tokens=100, temperature=0.3)
     
-    console.print(f"\n[green]✓ Thanks for clarifying! Now I have a clear picture.[/green]\n")
-    return clarified_query
+    if "SUFFICIENT" in result.upper():
+        console.print("[green]✓ Information is sufficient![/green]")
+        return True, None
+    else:
+        # Extract missing information
+        missing = result.replace("MISSING:", "").strip()
+        console.print(f"[yellow]⚠️  Model indicates missing info: {missing}[/yellow]")
+        return False, missing
 
 def check_and_clarify_delete_command(query):
-    """Smart clarification specifically for delete commands - asks only needed questions."""
+    """Smart clarification for delete - uses model to verify if info is sufficient."""
     if not re.search(r'\bdelete\b|\brm\b|\bremove\b', query, re.IGNORECASE):
         return query, False
     
     filename = extract_filename(query)
     
-    # If filename found but no path, ask for directory
-    if filename and not has_file_path(query):
-        console.print(f"\n[bold yellow]ℹ️  Delete command detected[/bold yellow]")
-        console.print("[yellow]Asking clarifying questions:[/yellow]\n")
-        
-        # Check if path is mentioned elsewhere in query
-        path_patterns = [
-            (r'folder\s+(?:named|called)\s+([a-zA-Z0-9_\-\.]+)', 'folder'),
-            (r'directory\s+(?:named|called)\s+([a-zA-Z0-9_\-\.]+)', 'directory'),
-            (r'in\s+([a-zA-Z0-9_/\-\.]+)(?:\s+folder)?', 'path'),
-        ]
-        
-        detected_path = None
-        for pattern, path_type in path_patterns:
-            match = re.search(pattern, query, re.IGNORECASE)
-            if match:
-                detected_path = match.group(1)
-                console.print(f"[dim]✓ Detected {path_type}: {detected_path}[/dim]")
-                break
-        
-        # If path not detected, ask for it
-        if not detected_path:
-            directory = Prompt.ask("[cyan]Q1: Directory path where this file is located[/cyan]", default=".").strip()
-        else:
-            directory = detected_path
-            console.print(f"[dim]✓ Using detected directory: {directory}[/dim]")
-        
-        clarified_query = f"Delete the file '{directory}/{filename}'"
-        console.print(f"\n[green]✓ I'll delete '{directory}/{filename}'[/green]\n")
+    if not filename:
+        return query, False
+    
+    console.print(f"\n[bold yellow]ℹ️  Delete command detected[/bold yellow]")
+    console.print("[yellow]Asking clarifying questions:[/yellow]\n")
+    
+    # Build initial query
+    initial_query = f"Delete file '{filename}'"
+    
+    # Use MODEL to check if we need more info
+    is_sufficient, missing_info = evaluate_information_sufficiency(initial_query)
+    
+    if is_sufficient:
+        clarified_query = f"Delete the file '{filename}'"
+        console.print(f"\n[green]✓ I'll delete '{filename}'[/green]\n")
         return clarified_query, True
     
-    return query, False
+    # Model says we need directory - ask for it
+    console.print(f"[yellow]Model says: {missing_info}[/yellow]")
+    
+    # Check if path is mentioned elsewhere in query
+    path_patterns = [
+        (r'folder\s+(?:named|called)\s+([a-zA-Z0-9_\-\.]+)', 'folder'),
+        (r'directory\s+(?:named|called)\s+([a-zA-Z0-9_\-\.]+)', 'directory'),
+        (r'in\s+([a-zA-Z0-9_/\-\.]+)(?:\s+folder)?', 'path'),
+    ]
+    
+    detected_path = None
+    for pattern, path_type in path_patterns:
+        match = re.search(pattern, query, re.IGNORECASE)
+        if match:
+            detected_path = match.group(1)
+            console.print(f"[dim]✓ Detected {path_type}: {detected_path}[/dim]")
+            break
+    
+    if not detected_path:
+        directory = Prompt.ask("[cyan]Q1: Directory path where this file is located[/cyan]", default=".").strip()
+    else:
+        directory = detected_path
+    
+    clarified_query = f"Delete the file '{directory}/{filename}'"
+    
+    # Final model check
+    is_sufficient, _ = evaluate_information_sufficiency(clarified_query)
+    if not is_sufficient:
+        console.print("[yellow]Let me ask for more details:[/yellow]")
+        more_info = Prompt.ask("[cyan]Any additional context?[/cyan]", default="").strip()
+        if more_info:
+            clarified_query += f" ({more_info})"
+    
+    console.print(f"\n[green]✓ I'll delete '{directory}/{filename}'[/green]\n")
+    return clarified_query, True
 
 def check_and_clarify_find_command(query):
     """Smart clarification for find/search commands - only asks for missing information."""
@@ -299,7 +301,7 @@ def check_and_clarify_find_command(query):
     return clarified_query, True
 
 def check_and_clarify_copy_command(query):
-    """Smart clarification for copy/cp commands - only asks for missing information."""
+    """Smart clarification for copy - uses model to verify if info is sufficient."""
     if not re.search(r'\bcopy\b|\bcp\b', query, re.IGNORECASE):
         return query, False
     
@@ -307,12 +309,26 @@ def check_and_clarify_copy_command(query):
     from_match = re.search(r'\bfrom\s+([^\s]+)', query, re.IGNORECASE)
     to_match = re.search(r'\bto\s+([^\s]+)', query, re.IGNORECASE)
     
-    # If already has enough info, don't clarify
-    if from_match and to_match:
-        return query, False
+    # Build initial query for model evaluation
+    initial_query = "Copy operation"
+    if from_match:
+        initial_query += f" from '{from_match.group(1)}'"
+    if to_match:
+        initial_query += f" to '{to_match.group(1)}'"
     
+    # Use MODEL to check if we have enough information
+    is_sufficient, missing_info = evaluate_information_sufficiency(initial_query)
+    
+    if is_sufficient and from_match and to_match:
+        clarified_query = f"Copy from '{from_match.group(1)}' to '{to_match.group(1)}'"
+        console.print(f"\n[green]✓ I'll copy '{from_match.group(1)}' to '{to_match.group(1)}'[/green]\n")
+        return clarified_query, True
+    
+    # Model says we need more info
     console.print("\n[bold yellow]ℹ️  Copy command detected[/bold yellow]")
     console.print("[yellow]Asking clarifying questions:[/yellow]\n")
+    if missing_info:
+        console.print(f"[yellow]Model says: {missing_info}[/yellow]\n")
     
     # Ask for source if not provided
     if not from_match:
@@ -328,20 +344,19 @@ def check_and_clarify_copy_command(query):
         destination = to_match.group(1)
         console.print(f"[dim]✓ Destination: {destination}[/dim]")
     
-    # Only ask about recursive if source looks like a directory or query mentions directory
-    if '/' in source or source.endswith('/') or 'directory' in query.lower() or 'folder' in query.lower():
-        recursive_ans = Prompt.ask("[cyan]Q3: Copy recursively? (yes/no)[/cyan]", default="yes").strip().lower()
-        recursive = "recursively" if recursive_ans == "yes" else ""
-    else:
-        recursive = ""
-        console.print(f"[dim]✓ Treating as file copy[/dim]")
+    clarified_query = f"Copy from '{source}' to '{destination}'"
     
-    clarified_query = f"Copy from '{source}' to '{destination}' {recursive}"
+    # Model final check
+    is_sufficient, _ = evaluate_information_sufficiency(clarified_query)
+    if not is_sufficient:
+        recursive_ans = Prompt.ask("[cyan]Q3: Copy recursively? (yes/no)[/cyan]", default="yes").strip().lower()
+        clarified_query += f" {'recursively' if recursive_ans == 'yes' else ''}"
+    
     console.print(f"\n[green]✓ I'll copy '{source}' to '{destination}'[/green]\n")
     return clarified_query, True
 
 def check_and_clarify_create_command(query):
-    """Smart clarification for create file commands - asks only needed questions."""
+    """Smart clarification for create file commands - uses model to verify sufficiency."""
     if not re.search(r'\bcreate\b|\btouch\b|\bmake.*file\b', query, re.IGNORECASE):
         return query, False
     
@@ -362,32 +377,41 @@ def check_and_clarify_create_command(query):
         directory = '.'
         filename_only = filename
     
-    # Determine if file type is needed based on filename
-    needs_filetype = '.' not in filename_only
+    # Build intermediate query for model evaluation
+    intermediate_query = f"Create file at '{directory}/{filename_only}'"
     
-    filetype_str = ""
+    # Use MODEL to determine if we need more questions
+    is_sufficient, missing_info = evaluate_information_sufficiency(intermediate_query)
+    
+    if is_sufficient:
+        # Model says we have enough - create empty file
+        clarified_query = f"Create empty file '{directory}/{filename_only}'"
+        console.print(f"\n[green]✓ I'll create '{directory}/{filename_only}'[/green]\n")
+        return clarified_query, True
+    
+    # Model says we need more info - ask follow-up questions
+    console.print(f"[yellow]Model says: {missing_info}[/yellow]")
+    
+    # Ask about file type if extension missing
+    needs_filetype = '.' not in filename_only
     if needs_filetype:
         file_type = Prompt.ask("[cyan]Q2: File type (e.g., txt, py, sh, json)[/cyan]", default="txt").strip()
         filetype_str = f".{file_type}" if file_type and not file_type.startswith('.') else file_type
         filename_only = f"{filename_only}{filetype_str}"
-    else:
-        console.print(f"[dim]✓ File type detected from extension: {filename_only.split('.')[-1]}[/dim]")
     
-    # Determine if content is needed - check if query mentions content
-    if 'content' in query.lower() or 'with' in query.lower():
-        content = Prompt.ask("[cyan]Q3: Initial content (leave blank for empty file)[/cyan]", default="").strip()
-    else:
-        console.print(f"[dim]✓ No content specified, creating empty file[/dim]")
-        content = ""
+    # Ask about content
+    has_content = Prompt.ask("[cyan]Q3: Add initial content? (yes/no)[/cyan]", default="no").strip().lower() == "yes"
     
-    # Build final clarified query
-    full_path = f"{directory}/{filename_only}" if directory != '.' else filename_only
-    if content:
-        clarified_query = f"Create file '{full_path}' with content: {content}"
+    if has_content:
+        content = Prompt.ask("[cyan]Q4: Initial content[/cyan]").strip()
+        clarified_query = f"Create file '{directory}/{filename_only}' with content: {content}"
     else:
-        clarified_query = f"Create empty file '{full_path}'"
+        clarified_query = f"Create empty file '{directory}/{filename_only}'"
     
-    console.print(f"\n[green]✓ I'll create '{full_path}'[/green]\n")
+    # Final model check
+    is_sufficient, _ = evaluate_information_sufficiency(clarified_query)
+    
+    console.print(f"\n[green]✓ I'll create '{directory}/{filename_only}'[/green]\n")
     return clarified_query, True
 
 def check_and_clarify_grep_command(query):
@@ -778,10 +802,8 @@ def execute_sequence(command_str, enable_dependency_check=True):
     
     # Analyze dependencies
     if enable_dependency_check and len(commands) > 1:
-        if DEBUG_MODE:
-            console.print(f"\n[bold cyan]🔍 Analyzing {len(commands)} command(s) for dependencies...[/bold cyan]")
-        else:
-            console.print(f"\n[cyan]Analyzing {len(commands)} command(s)...[/cyan]")
+        style = "bold cyan" if DEBUG_MODE else "cyan"
+        console.print(f"\n[{style}]🔍 Analyzing {len(commands)} command(s){'for dependencies' if DEBUG_MODE else ''}...[/{style}]")
         dependencies = analyze_command_dependencies(commands)
     else:
         dependencies = [{'index': i, 'command': cmd, 'requires_success': True} 
@@ -974,11 +996,6 @@ def run_cli():
                 query = clarified_query
                 break
         
-        # Check if query still needs general clarification
-        needs_clarification, clarification_questions = check_query_clarity(query)
-        if needs_clarification and not was_clarified:
-            query = ask_clarifying_questions(query, clarification_questions)
-        
         error_context = None
         rag_examples = None
         
@@ -1024,10 +1041,8 @@ def run_cli():
             if attempt == 0 and not dangers:
                 should_execute = Confirm.ask("Execute these commands?", default=True)
             elif attempt > 0:
-                if DEBUG_MODE:
-                    console.print("[yellow]Auto-executing retry attempt...[/yellow]")
-                else:
-                    console.print("[dim]Auto-executing retry attempt...[/dim]")
+                style = "yellow" if DEBUG_MODE else "dim"
+                console.print(f"[{style}]Auto-executing retry attempt...[/{style}]")
             
             if not should_execute:
                 console.print("[grey]Skipped execution.[/grey]\n")
