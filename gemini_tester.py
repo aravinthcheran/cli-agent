@@ -399,15 +399,43 @@ def generate_command_from_nl(nl_query: str) -> Tuple[str, bool]:
         console.print(f"[red]Error generating command: {e}[/red]")
         return "", False
 
-def run_test_suite(test_cases: List[Dict], detailed: bool = False, batch_size: int = 50) -> Dict:
+def save_generated_commands(test_results: List[Dict], output_path: str):
+    """Save generated commands to a JSON file for later re-evaluation."""
+    try:
+        with open(output_path, 'w', encoding='utf-8') as f:
+            json.dump(test_results, f, indent=2, ensure_ascii=False)
+        console.print(f"[green]✅ Generated commands saved to: {output_path}[/green]")
+        console.print(f"[dim]💡 You can re-evaluate these commands later by choosing 'reeval' mode[/dim]")
+        return True
+    except Exception as e:
+        console.print(f"[yellow]⚠️ Error saving commands: {e}[/yellow]")
+        return False
+
+def load_generated_commands(input_path: str) -> List[Dict]:
+    """Load previously generated commands from a JSON file."""
+    try:
+        with open(input_path, 'r', encoding='utf-8') as f:
+            test_results = json.load(f)
+        console.print(f"[green]✅ Loaded {len(test_results)} generated commands from: {input_path}[/green]")
+        return test_results
+    except FileNotFoundError:
+        console.print(f"[red]❌ File not found: {input_path}[/red]")
+        return []
+    except Exception as e:
+        console.print(f"[red]❌ Error loading commands: {e}[/red]")
+        return []
+
+def run_test_suite(test_cases: List[Dict], detailed: bool = False, batch_size: int = 50, 
+                   generated_commands_file: str = None) -> Dict:
     """
     Run the complete test suite and return results.
-    First generates all commands, then evaluates in batches with Gemini.
+    First generates all commands (or loads from file), then evaluates in batches with Gemini.
     
     Args:
         test_cases: List of test case dictionaries
         detailed: Whether to show detailed output (legacy param)
         batch_size: Number of tests to evaluate per Gemini API call
+        generated_commands_file: Optional path to load pre-generated commands from
     
     Returns dict with:
     - total: int
@@ -417,36 +445,54 @@ def run_test_suite(test_cases: List[Dict], detailed: bool = False, batch_size: i
     - gemini_evaluation: dict
     - results: list of detailed results
     """
-    # Step 1: Generate all commands
-    console.print("\n[bold cyan]Step 1: Generating commands...[/bold cyan]")
+    # Step 1: Generate or load commands
     test_results = []
     
-    with Progress(
-        SpinnerColumn(),
-        TextColumn("[progress.description]{task.description}"),
-        console=console
-    ) as progress:
-        task = progress.add_task("[cyan]Generating...", total=len(test_cases))
+    if generated_commands_file:
+        # Load pre-generated commands
+        console.print("\n[bold cyan]Step 1: Loading pre-generated commands...[/bold cyan]")
+        test_results = load_generated_commands(generated_commands_file)
         
-        for i, test_case in enumerate(test_cases, 1):
-            progress.update(task, description=f"[cyan]Generating {i}/{len(test_cases)}: {test_case['nl'][:50]}...")
-            
-            # Generate command
-            generated_cmd, gen_success = generate_command_from_nl(test_case['nl'])
-            
-            test_results.append({
-                'test_num': i,
-                'nl_query': test_case['nl'],
-                'expected': test_case['bash'],
-                'expected_alt': test_case.get('bash2', ''),
-                'generated': generated_cmd if gen_success else "(generation failed)",
-                'generation_success': gen_success,
-                'difficulty': test_case['difficulty']
-            })
-            
-            progress.advance(task)
+        if not test_results:
+            console.print("[red]Failed to load commands. Will generate new ones.[/red]")
+            generated_commands_file = None  # Fall through to generation
     
-    console.print(f"[green]✓ Generated {len(test_results)} commands[/green]")
+    if not generated_commands_file:
+        # Generate commands
+        console.print("\n[bold cyan]Step 1: Generating commands...[/bold cyan]")
+        test_results = []
+    
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            console=console
+        ) as progress:
+            task = progress.add_task("[cyan]Generating...", total=len(test_cases))
+            
+            for i, test_case in enumerate(test_cases, 1):
+                progress.update(task, description=f"[cyan]Generating {i}/{len(test_cases)}: {test_case['nl'][:50]}...")
+                
+                # Generate command
+                generated_cmd, gen_success = generate_command_from_nl(test_case['nl'])
+                
+                test_results.append({
+                    'test_num': i,
+                    'nl_query': test_case['nl'],
+                    'expected': test_case['bash'],
+                    'expected_alt': test_case.get('bash2', ''),
+                    'generated': generated_cmd if gen_success else "(generation failed)",
+                    'generation_success': gen_success,
+                    'difficulty': test_case['difficulty']
+                })
+                
+                progress.advance(task)
+        
+        console.print(f"[green]✓ Generated {len(test_results)} commands[/green]")
+        
+        # Save generated commands for potential re-use
+        timestamp = time.strftime("%Y%m%d_%H%M%S")
+        commands_file = f"generated_commands_{timestamp}.json"
+        save_generated_commands(test_results, commands_file)
     
     # Step 2: Batch evaluate with Gemini
     console.print("\n[bold cyan]Step 2: Evaluating with Gemini AI...[/bold cyan]")
@@ -601,48 +647,94 @@ def main():
     
     console.print(f"\n[cyan]Test file:[/cyan] {csv_path}")
     
-    # Ask how many tests to run
-    console.print("\n[bold yellow]Test Configuration:[/bold yellow]")
-    num_tests = Prompt.ask(
-        "How many test cases to run?",
-        default="10"
+    # Ask if user wants to re-evaluate existing commands
+    console.print("\n[bold yellow]Evaluation Mode:[/bold yellow]")
+    console.print("  [cyan]new[/cyan]    - Generate new commands and evaluate them")
+    console.print("  [cyan]reeval[/cyan] - Re-evaluate previously generated commands (faster, no regeneration)")
+    mode = Prompt.ask(
+        "\nChoose mode",
+        choices=["new", "reeval"],
+        default="new"
     )
     
-    try:
-        num_tests = int(num_tests)
-    except ValueError:
-        num_tests = 10
+    generated_commands_file = None
+    test_cases = []
     
-    # Load test cases
-    console.print(f"\n[cyan]Loading test cases...[/cyan]")
-    test_cases = load_test_cases(csv_path, limit=num_tests)
+    if mode == "reeval":
+        # Re-evaluate existing generated commands
+        console.print("\n[cyan]Available command files:[/cyan]")
+        import glob
+        command_files = sorted(glob.glob("generated_commands_*.json"), reverse=True)
+        
+        if command_files:
+            for i, file in enumerate(command_files[:10], 1):  # Show last 10
+                file_time = file.replace("generated_commands_", "").replace(".json", "")
+                console.print(f"  [{i}] {file} ({file_time})")
+            
+            file_choice = Prompt.ask(
+                "\nEnter file number or full path",
+                default="1"
+            )
+            
+            try:
+                choice_num = int(file_choice)
+                if 1 <= choice_num <= len(command_files):
+                    generated_commands_file = command_files[choice_num - 1]
+                else:
+                    console.print("[red]Invalid choice. Exiting.[/red]")
+                    return
+            except ValueError:
+                # User entered a path
+                generated_commands_file = file_choice
+        else:
+            console.print("[yellow]No generated command files found. Please run in 'new' mode first.[/yellow]")
+            return
+    else:
+        # Generate new commands
+        # Ask how many tests to run
+        console.print("\n[bold yellow]Test Configuration:[/bold yellow]")
+        num_tests = Prompt.ask(
+            "How many test cases to run?",
+            default="10"
+        )
     
-    if not test_cases:
-        console.print("[bold red]No test cases loaded. Exiting.[/bold red]")
-        return
-    
-    console.print(f"[green]✅ Loaded {len(test_cases)} test cases[/green]")
-    
-    # Confirm to proceed
-    if not Confirm.ask(f"\n[bold]Run {len(test_cases)} tests?[/bold]", default=True):
-        console.print("[yellow]Cancelled.[/yellow]")
-        return
+        try:
+            num_tests = int(num_tests)
+        except ValueError:
+            num_tests = 10
+        
+        # Load test cases
+        console.print(f"\n[cyan]Loading test cases...[/cyan]")
+        test_cases = load_test_cases(csv_path, limit=num_tests)
+        
+        if not test_cases:
+            console.print("[bold red]No test cases loaded. Exiting.[/bold red]")
+            return
+        
+        console.print(f"[green]✅ Loaded {len(test_cases)} test cases[/green]")
+        
+        # Confirm to proceed
+        if not Confirm.ask(f"\n[bold]Run {len(test_cases)} tests?[/bold]", default=True):
+            console.print("[yellow]Cancelled.[/yellow]")
+            return
     
     # Run tests
     console.print("\n[bold cyan]Starting test suite...[/bold cyan]\n")
     
-    # Determine batch size based on number of tests
-    # For large test sets, use smaller batches to avoid timeouts
-    if len(test_cases) > 200:
+    # Determine batch size based on number of tests or loaded commands
+    num_items = len(test_cases) if test_cases else 300  # Default estimate if reeval
+    
+    if num_items > 200:
         batch_size = 30
-    elif len(test_cases) > 100:
+    elif num_items > 100:
         batch_size = 40
     else:
         batch_size = 50
     
     console.print(f"[dim]Using batch size: {batch_size} tests per API call[/dim]\n")
     
-    results = run_test_suite(test_cases, detailed=False, batch_size=batch_size)
+    results = run_test_suite(test_cases, detailed=False, batch_size=batch_size,
+                            generated_commands_file=generated_commands_file)
     
     # Display summary
     display_summary(results)
