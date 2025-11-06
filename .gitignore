@@ -21,6 +21,7 @@ sdist/
 venv/
 misc/
 var/
+cache/
 myenv/
 .venv-linux/
 wheels/

@@ -29,14 +29,14 @@ console = Console()
 # ===============================
 # GEMINI API CONFIGURATION
 # ===============================
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "AIzaSyC4oPZFMEw18uUSUbXK_ZmWz4CMAbPMZ5Y")
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "AIzaSyCdkaNZ1uDNnC4g8FFK1R8Cq-8FBcIC4UI")
 GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-exp:generateContent"
 
 # ===============================
 # GEMINI API FUNCTIONS
 # ===============================
-def call_gemini_api(prompt: str, temperature: float = 0.3, max_tokens: int = 500) -> str:
-    """Call Gemini API with the given prompt."""
+def call_gemini_api(prompt: str, temperature: float = 0.3, max_tokens: int = 500, retries: int = 3) -> str:
+    """Call Gemini API with the given prompt, with retry logic."""
     if not GEMINI_API_KEY:
         raise ValueError("GEMINI_API_KEY environment variable not set!")
     
@@ -56,34 +56,51 @@ def call_gemini_api(prompt: str, temperature: float = 0.3, max_tokens: int = 500
         }
     }
     
-    try:
-        response = requests.post(
-            f"{GEMINI_API_URL}?key={GEMINI_API_KEY}",
-            headers=headers,
-            json=payload,
-            timeout=120  # Increased to 120 seconds for large batches
-        )
-        response.raise_for_status()
-        
-        result = response.json()
-        
-        # Extract text from Gemini response
-        if "candidates" in result and len(result["candidates"]) > 0:
-            candidate = result["candidates"][0]
-            if "content" in candidate and "parts" in candidate["content"]:
-                parts = candidate["content"]["parts"]
-                if len(parts) > 0 and "text" in parts[0]:
-                    return parts[0]["text"].strip()
-        
-        console.print("[red]⚠️ Unexpected Gemini API response format[/red]")
-        return ""
-        
-    except requests.exceptions.RequestException as e:
-        console.print(f"[bold red]Error calling Gemini API: {e}[/bold red]")
-        return ""
-    except Exception as e:
-        console.print(f"[bold red]Unexpected error: {e}[/bold red]")
-        return ""
+    last_error = None
+    for attempt in range(retries):
+        try:
+            response = requests.post(
+                f"{GEMINI_API_URL}?key={GEMINI_API_KEY}",
+                headers=headers,
+                json=payload,
+                timeout=120  # Increased to 120 seconds for large batches
+            )
+            response.raise_for_status()
+            
+            result = response.json()
+            
+            # Extract text from Gemini response
+            if "candidates" in result and len(result["candidates"]) > 0:
+                candidate = result["candidates"][0]
+                if "content" in candidate and "parts" in candidate["content"]:
+                    parts = candidate["content"]["parts"]
+                    if len(parts) > 0 and "text" in parts[0]:
+                        return parts[0]["text"].strip()
+            
+            console.print("[red]⚠️ Unexpected Gemini API response format[/red]")
+            return ""
+            
+        except requests.exceptions.Timeout as e:
+            last_error = e
+            if attempt < retries - 1:
+                wait_time = (attempt + 1) * 2  # Exponential backoff
+                console.print(f"[yellow]⚠️ Request timeout. Retrying in {wait_time}s... (attempt {attempt + 2}/{retries})[/yellow]")
+                time.sleep(wait_time)
+            else:
+                console.print(f"[bold red]Error: Request timed out after {retries} attempts[/bold red]")
+        except requests.exceptions.RequestException as e:
+            last_error = e
+            if attempt < retries - 1:
+                wait_time = (attempt + 1) * 2
+                console.print(f"[yellow]⚠️ Network error: {str(e)[:100]}. Retrying in {wait_time}s... (attempt {attempt + 2}/{retries})[/yellow]")
+                time.sleep(wait_time)
+            else:
+                console.print(f"[bold red]Error calling Gemini API after {retries} attempts: {e}[/bold red]")
+        except Exception as e:
+            console.print(f"[bold red]Unexpected error: {e}[/bold red]")
+            return ""
+    
+    return ""
 
 def evaluate_batch_accuracy(test_results: List[Dict], batch_size: int = 50) -> Dict:
     """
@@ -142,9 +159,9 @@ def evaluate_batch_accuracy(test_results: List[Dict], batch_size: int = 50) -> D
             
             progress.advance(task)
             
-            # Small delay between batches to avoid rate limiting
+            # Delay between batches to avoid rate limiting
             if batch_num < num_batches - 1:
-                time.sleep(1)
+                time.sleep(2)  # Increased to 2 seconds
     
     # Combine all results
     overall_accuracy = f"{total_correct}/{total_tests} ({(total_correct/total_tests)*100:.1f}%)"
@@ -284,21 +301,42 @@ Output ONLY the JSON, nothing else."""
         if json_start >= 0 and json_end >= 0 and json_end > json_start:
             json_str = cleaned_response[json_start:json_end + 1]
             
-            # Try to parse the JSON
-            result = json.loads(json_str)
+            # Try multiple parsing strategies
+            parse_attempts = [
+                json_str,  # Try original first
+                json_str.encode('utf-8').decode('unicode_escape').encode('latin1').decode('utf-8'),  # Fix escaped chars
+                re.sub(r'\\(?!["\\/bfnrtu])', r'\\\\', json_str),  # Escape invalid backslashes
+            ]
             
-            # Validate required fields
-            if "overall_accuracy" in result and "correct_count" in result:
-                console.print(f"[green]✓ Successfully parsed Gemini evaluation[/green]")
-                return result
-            else:
-                console.print(f"[yellow]⚠️ JSON missing required fields[/yellow]")
+            for attempt_num, json_attempt in enumerate(parse_attempts):
+                try:
+                    result = json.loads(json_attempt)
+                    
+                    # Validate required fields
+                    if "overall_accuracy" in result and "correct_count" in result:
+                        if attempt_num > 0:
+                            console.print(f"[green]✓ Successfully parsed Gemini evaluation (attempt {attempt_num + 1})[/green]")
+                        else:
+                            console.print(f"[green]✓ Successfully parsed Gemini evaluation[/green]")
+                        return result
+                    else:
+                        console.print(f"[yellow]⚠️ JSON missing required fields[/yellow]")
+                        break  # Don't try other methods if structure is wrong
+                except (json.JSONDecodeError, UnicodeDecodeError, AttributeError):
+                    if attempt_num == len(parse_attempts) - 1:
+                        # Last attempt failed
+                        console.print(f"[yellow]⚠️ All JSON parsing attempts failed[/yellow]")
+                    continue
         else:
             console.print(f"[yellow]⚠️ Could not find valid JSON boundaries[/yellow]")
             
     except json.JSONDecodeError as e:
-        console.print(f"[yellow]⚠️ Failed to parse Gemini response as JSON: {e}[/yellow]")
-        console.print(f"[dim]Response preview: {response[:500]}...[/dim]")
+        # Truncate error message to first 100 chars
+        error_msg = str(e)[:100]
+        console.print(f"[yellow]⚠️ Failed to parse Gemini response as JSON: {error_msg}[/yellow]")
+        # Show a cleaner preview
+        preview = response[:400].replace('\n', ' ')
+        console.print(f"[dim]Response preview: {preview}...[/dim]")
         
         # Try to salvage partial results
         try:
@@ -306,7 +344,6 @@ Output ONLY the JSON, nothing else."""
             if "overall_accuracy" in response and "correct_count" in response:
                 console.print("[yellow]Attempting to extract partial results...[/yellow]")
                 # Use regex or simple parsing to extract key fields
-                import re
                 
                 # Try to find overall_accuracy
                 acc_match = re.search(r'"overall_accuracy"\s*:\s*"([^"]+)"', response)
@@ -501,11 +538,14 @@ def run_test_suite(test_cases: List[Dict], detailed: bool = False, batch_size: i
     gemini_evaluation = evaluate_batch_accuracy(test_results, batch_size=batch_size)
     
     # Step 3: Combine results
+    total_count = len(test_results)  # Use test_results instead of test_cases (handles both new and reeval modes)
+    passed_count = gemini_evaluation.get('correct_count', 0)
+    
     results = {
-        'total': len(test_cases),
-        'passed': gemini_evaluation.get('correct_count', 0),
-        'failed': len(test_cases) - gemini_evaluation.get('correct_count', 0),
-        'generation_failed': sum(1 for r in test_results if not r['generation_success']),
+        'total': total_count,
+        'passed': passed_count,
+        'failed': total_count - passed_count,
+        'generation_failed': sum(1 for r in test_results if not r.get('generation_success', True)),
         'overall_accuracy': gemini_evaluation.get('overall_accuracy', 'N/A'),
         'gemini_analysis': gemini_evaluation.get('analysis', ''),
         'results': []

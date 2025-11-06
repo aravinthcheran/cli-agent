@@ -1,5 +1,13 @@
+import os
 import pandas as pd
 import re
+
+# Get the project root directory (parent of preprocess)
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+PROJECT_ROOT = os.path.dirname(SCRIPT_DIR)
+DATASETS_DIR = os.path.join(PROJECT_ROOT, "datasets")
+
+print(f"📁 Working with datasets in: {DATASETS_DIR}\n")
 
 # ---- Utility Functions ----
 def clean_text(text: str) -> str:
@@ -103,5 +111,21 @@ def preprocess_test(test_csv, output_csv):
 
 
 # ---- Run ----
-preprocess_train("train.csv", "train_clean.csv")
-preprocess_test("test.csv", "test_clean.csv")
+if __name__ == "__main__":
+    # Define input and output paths
+    train_input = os.path.join(DATASETS_DIR, "train.csv")
+    train_output = os.path.join(DATASETS_DIR, "train_clean.csv")
+    test_input = os.path.join(DATASETS_DIR, "test.csv")
+    test_output = os.path.join(DATASETS_DIR, "test_clean.csv")
+    
+    # Check if input files exist
+    if not os.path.exists(train_input):
+        print(f"❌ Error: {train_input} not found. Please run load_dataset.py first.")
+        exit(1)
+    if not os.path.exists(test_input):
+        print(f"❌ Error: {test_input} not found. Please run load_dataset.py first.")
+        exit(1)
+    
+    # Run preprocessing
+    preprocess_train(train_input, train_output)
+    preprocess_test(test_input, test_output)

@@ -5,17 +5,9 @@ from sentence_transformers import SentenceTransformer
 import faiss
 import os
 
-# Get the project root directory (parent of index_build)
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-PROJECT_ROOT = os.path.dirname(SCRIPT_DIR)
-CACHE_DIR = os.path.join(PROJECT_ROOT, "cache")
-
-# Create cache directory if it doesn't exist
-os.makedirs(CACHE_DIR, exist_ok=True)
-
-DATA_FILE = os.path.join(PROJECT_ROOT, "datasets", "train.jsonl")
-INDEX_FILE = os.path.join(CACHE_DIR, "bash_commands_l2.bin")
-META_FILE = os.path.join(CACHE_DIR, "metadata_l2.npz")
+DATA_FILE = "../../train.jsonl"
+INDEX_FILE = "../bash_commands_cosine_e5.bin"
+META_FILE = "../metadata_cosine_e5.npz"
 
 # Load dataset (JSONL format - one JSON object per line)
 with open(DATA_FILE, "r", encoding="utf-8") as f:
@@ -31,19 +23,26 @@ if os.path.exists(INDEX_FILE) and os.path.exists(META_FILE):
     load_time = time.time() - load_start
     print(f"✓ Loaded in {load_time:.4f} seconds")
 else:
-    print("Building FAISS index with L2 distance from scratch...")
+    print("Building FAISS index with cosine similarity from scratch using e5-base-v2...")
     texts = [item["instruction"] for item in data]
 
     # Embeddings
-    embedder = SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2")
-    print(f"Encoding {len(texts)} texts...")
-    embeddings = embedder.encode(texts, convert_to_numpy=True)
+    embedder = SentenceTransformer("intfloat/e5-base-v2")
+    print(f"Encoding {len(texts)} texts with e5-base-v2...")
+    # E5 models require "passage: " prefix for documents
+    texts_with_prefix = [f"passage: {text}" for text in texts]
+    embeddings = embedder.encode(texts_with_prefix, convert_to_numpy=True, show_progress_bar=True)
+
+    # Normalize embeddings for cosine similarity
+    print("Normalizing embeddings...")
+    faiss.normalize_L2(embeddings)
 
     # Build FAISS index
     print("Building and indexing...")
     build_start = time.time()
     d = embeddings.shape[1]
-    index = faiss.IndexFlatL2(d)
+    print(f"Embedding dimension: {d}")
+    index = faiss.IndexFlatIP(d)  # Inner Product for cosine similarity
     index.add(embeddings)
     build_time = time.time() - build_start
 
@@ -52,22 +51,23 @@ else:
     faiss.write_index(index, INDEX_FILE)
     np.savez_compressed(META_FILE, data=np.array(data, dtype=object))
 
-    print(f"✓ Indexed {len(texts)} commands into FAISS (L2 Distance)")
+    print(f"✓ Indexed {len(texts)} commands into FAISS (Cosine Similarity)")
     print(f"✓ Index building time: {build_time:.4f} seconds")
     print(f"✓ Files saved: {INDEX_FILE}, {META_FILE}")
 
 # Example retrieval function
 def retrieve(query, k=5):
-    query_vec = embedder.encode([query], convert_to_numpy=True)
+    query_vec = embedder.encode([f"query: {query}"], convert_to_numpy=True)
+    faiss.normalize_L2(query_vec)  # Normalize query vector
     D, I = index.search(query_vec, k)
     results = [data[idx] for idx in I[0]]
-    return results
+    return results, D[0]
 
 # Example usage
 if __name__ == "__main__":
-    embedder = SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2")
+    embedder = SentenceTransformer("intfloat/e5-base-v2")
     query = "show free space on all filesystems"
-    results = retrieve(query)
+    results, similarities = retrieve(query)
     print("\nExample retrieval results:")
-    for r in results:
-        print(r)
+    for i, r in enumerate(results):
+        print(f"{i+1}. [Similarity: {similarities[i]:.4f}] {r['instruction']} -> {r['response']}")

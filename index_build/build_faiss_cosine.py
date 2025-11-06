@@ -5,13 +5,21 @@ from sentence_transformers import SentenceTransformer
 import faiss
 import os
 
-DATA_FILE = "train.jsonl"
-INDEX_FILE = "bash_commands_cosine.bin"
-META_FILE = "metadata_cosine.npz"
+# Get the project root directory (parent of index_build)
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+PROJECT_ROOT = os.path.dirname(SCRIPT_DIR)
+CACHE_DIR = os.path.join(PROJECT_ROOT, "cache")
 
-# Load dataset
+# Create cache directory if it doesn't exist
+os.makedirs(CACHE_DIR, exist_ok=True)
+
+DATA_FILE = os.path.join(PROJECT_ROOT, "datasets", "train.jsonl")
+INDEX_FILE = os.path.join(CACHE_DIR, "bash_commands_cosine.bin")
+META_FILE = os.path.join(CACHE_DIR, "metadata_cosine.npz")
+
+# Load dataset (JSONL format - one JSON object per line)
 with open(DATA_FILE, "r", encoding="utf-8") as f:
-    data = json.load(f)
+    data = [json.loads(line) for line in f]
 
 # Check if index already exists
 if os.path.exists(INDEX_FILE) and os.path.exists(META_FILE):
@@ -24,7 +32,7 @@ if os.path.exists(INDEX_FILE) and os.path.exists(META_FILE):
     print(f"✓ Loaded in {load_time:.4f} seconds")
 else:
     print("Building FAISS index with cosine similarity from scratch...")
-    texts = [item["nl"] for item in data]
+    texts = [item["instruction"] for item in data]
 
     # Embeddings
     embedder = SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2")
