@@ -29,7 +29,7 @@ console = Console()
 # ===============================
 # GEMINI API CONFIGURATION
 # ===============================
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "AIzaSyCdkaNZ1uDNnC4g8FFK1R8Cq-8FBcIC4UI")
+GEMINI_API_KEY = os.environ.get("GEMINI_API")
 GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-exp:generateContent"
 
 # ===============================
